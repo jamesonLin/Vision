@@ -5,14 +5,14 @@ import random
 
 # set up paths
 image_dir = 'data/'
-train_dir = 'dataset2/train/'
-test_dir = 'dataset2/test/'
-valid_dir = 'dataset2/valid/'
-new_dir = 'dataset2/new/'
+train_dir = 'dataset3/train/'
+test_dir = 'dataset3/test/'
+valid_dir = 'dataset3/valid/'
+new_dir = 'dataset3/new/'
 csv_path = 'dataset/_annotations.csv'
 
 # set up class whitelist
-classes = {'trafficLight-Red', 'trafficLight-Green', 'trafficLight', 'car', 'truck'}
+classes = {'trafficLight-Red', 'trafficLight-Green', 'trafficLight'}
 
 # create directories if they don't exist
 os.makedirs(train_dir, exist_ok=True)
@@ -25,13 +25,14 @@ df = pd.read_csv(csv_path, header=0, names=['filename', 'width', 'height', 'clas
 df = df[df['class'].isin(classes)]
 
 # randomly select unique filenames
+df.drop_duplicates(subset='filename', keep='first', inplace=True)
 filenames = set(df['filename'])
-selected_filenames = set(random.sample(filenames, min(len(filenames), 1000))) # size for the randomly select
+selected_filenames = set(random.sample(filenames, min(len(filenames), 5000))) # size for the randomly select
 
 # calculate number of images for each split
 num_train = int(len(selected_filenames) * 0.5)
-num_test = int(len(selected_filenames) * 0.3)
-num_valid = int(len(selected_filenames) * 0.1)
+num_test = int(len(selected_filenames) * 0.2)
+num_valid = int(len(selected_filenames) * 0.2)
 num_new = len(selected_filenames) - num_train - num_test - num_valid
 
 # process each selected filename

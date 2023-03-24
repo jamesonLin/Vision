@@ -3,58 +3,59 @@ from matplotlib import patches
 import numpy as np
 import pandas as pd
 from PIL import Image
-from tensorflow import where, abs, square, reduce_sum, reduce_mean
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Flatten, Dropout, Input
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.losses import binary_crossentropy
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ModelCheckpoint
 
-def customLoss(y_true, y_pred):
-    # Split the true and predicted labels into classification and bounding box coordinates
-    y_true_cls = y_true[:, :num_classes]
-    y_pred_cls = y_pred[:, :num_classes]
-    y_true_reg = y_true[:, num_classes:]
-    y_pred_reg = y_pred[:, num_classes:]
+NUM_CLASSES = 3
+TRAINPATH = 'dataset3/train/'
+VALIDPATH = 'dataset3/valid/'
+TESTPATH = 'dataset3/test/'
+NEWPATH = 'dataset3/new/'
 
-    # Calculate the classification loss using binary crossentropy
-    cls_loss = binary_crossentropy(y_true_cls, y_pred_cls)
 
-    # Calculate the bounding box regression loss
-    reg_loss = where(
-        abs(y_true_reg - y_pred_reg) < 1,
-        0.5 * square(y_true_reg - y_pred_reg),
-        abs(y_true_reg - y_pred_reg) - 0.5,
-    )
-    reg_loss = reduce_sum(reg_loss, axis=1)
+def unnormalize_bbox(bbox, origSize, resSize):
+    scale_x = origSize[0] / resSize
+    scale_y = origSize[1] / resSize
 
-    # Calculate the total loss as a weighted sum of the classification and regression losses
-    total_loss = reduce_mean(cls_loss + 5 * reg_loss)
+    xNorm, yNorm, wNorm, hNorm = bbox
+    xmin = xNorm * (origSize[0] / scale_x)
+    ymin = yNorm * (origSize[1] / scale_y)
+    xmax = wNorm * (origSize[0] / scale_x)
+    ymax = hNorm * (origSize[1] / scale_y)
 
-    return total_loss
+    return (xmin, ymin, xmax, ymax)
 
-def scale(path):
+def scaleBbox(bbox, origSize, resSize):
+    # Calculate scaling factor
+    scaleX = resSize[0] / origSize[0]
+    scaleY = resSize[1] / origSize[1]
+
+    xmin, ymin, xmax, ymax = bbox
+    xminScaled = xmin * scaleX
+    yminScaled = ymin * scaleY
+    xmaxScaled = xmax * scaleX
+    ymaxScaled = ymax * scaleY
+
+    return (xminScaled, yminScaled, xmaxScaled, ymaxScaled)
+
+def CraeteLabelMap(path):
     annotations = pd.read_csv(path + 'annotation.csv')
-    for i, annotation in annotations.iterrows():
-        height = annotation['height']
-        width = annotation['width']
-        return height, width
+    # Map label strings to integer labels
+    labelMap = {}
+    unique_labels = set(annotations['class'])
+    for i, label in enumerate(unique_labels):
+        labelMap[label] = i
+    return labelMap
     
-# Read the data from csv file
-def readData(path):
+def readData(path, labelMap):
     target_size = (224, 224)
     annotations = pd.read_csv(path + 'annotation.csv')
 
     X_img = []
     y_labels = []
     y_bboxes = []
-
-    # Map label strings to integer labels
-    label_map = {}
-    unique_labels = set(annotations['class'])
-    for i, label in enumerate(unique_labels):
-        label_map[label] = i
 
     for i, annotation in annotations.iterrows():
         image_path = annotation['filename']
@@ -78,103 +79,82 @@ def readData(path):
         ymax_norm = ymax / height
         
         X_img.append(image_data)
-        y_labels.append(label_map[labels])
+        y_labels.append(labelMap[labels])
         y_bboxes.append([xmin_norm, ymin_norm, xmax_norm, ymax_norm])
 
     X_img = np.array(X_img)
     y_labels = np.array(y_labels)
     y_bboxes = np.array(y_bboxes)
+    
+    # Convert labels to one-hot encoding
+    Labels_cls = to_categorical(y_labels, NUM_CLASSES)
 
-    return X_img, y_labels, y_bboxes, path
+    return X_img, Labels_cls, y_bboxes
 
-num_classes = 5
+labelMap = CraeteLabelMap(TRAINPATH)
 
-trainImg, trainLabels, trainbboxes, trainImgPath = readData('dataset2/train/')
-validImg, validLabels, validbboxes, validImgPath = readData('dataset2/valid/')
-testImg, testLabels, testbboxes, testImgPath = readData('dataset2/test/')
-
-# Convert labels to one-hot encoding
-trainLabels_cls = to_categorical(trainLabels, num_classes)
-validLabels_cls = to_categorical(validLabels, num_classes)
-testLabels_cls = to_categorical(testLabels, num_classes)
-
-# Add bounding box coordinates to the classification labels
-trainLabels_cls_reg = np.concatenate([trainLabels_cls, trainbboxes], axis=1)
-validLabels_cls_reg = np.concatenate([validLabels_cls, validbboxes], axis=1)
-testLabels_cls_reg = np.concatenate([testLabels_cls, testbboxes], axis=1)
+trainImg, trainLabels, trainbboxes = readData(TRAINPATH, labelMap)
+validImg, validLabels, validbboxes = readData(VALIDPATH, labelMap)
+testImg, testLabels, testbboxes = readData(TESTPATH, labelMap)
 
 
 # Define input tensor
 inputs = Input(shape=(224, 224, 3))
 
-# Convolutional layers
-x = Conv2D(64, (3, 3), activation='relu', padding='same', name='block1_conv1')(inputs)
-x = Conv2D(64, (3, 3), activation='relu', padding='same', name='block1_conv2')(x)
-x = MaxPooling2D((2, 2), strides=(2, 2), name='block1_pool')(x)
+# # Convolutional layers
+x = Conv2D(32, kernel_size=(3, 3), activation="relu")(inputs)
+x = MaxPooling2D(pool_size=(2, 2))(x)
+x = Conv2D(64, kernel_size=(3, 3), activation="relu")(x)
+x = MaxPooling2D(pool_size=(2, 2))(x)
+x = Conv2D(128, kernel_size=(3, 3), activation="relu")(x)
+x = MaxPooling2D(pool_size=(2, 2))(x)
 
-x = Conv2D(128, (3, 3), activation='relu', padding='same', name='block2_conv1')(x)
-x = Conv2D(128, (3, 3), activation='relu', padding='same', name='block2_conv2')(x)
-x = MaxPooling2D((2, 2), strides=(2, 2), name='block2_pool')(x)
+# Define the classification and bounding box prediction heads
+classification = Flatten()(x)
+classification = Dense(256, activation="relu")(classification)
+classification = Dropout(0.5)(classification)
+class_output = Dense(NUM_CLASSES, activation="softmax", name="class_output")(classification)
 
-x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv1')(x)
-x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv2')(x)
-x = Conv2D(256, (3, 3), activation='relu', padding='same', name='block3_conv3')(x)
-x = MaxPooling2D((2, 2), strides=(2, 2), name='block3_pool')(x)
+bbox = Flatten()(x)
+bbox = Dense(256, activation="relu")(bbox)
+bbox = Dropout(0.5)(bbox)
+bbox_output = Dense(4, activation="linear", name="bbox_output")(bbox)
 
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv1')(x)
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv2')(x)
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block4_conv3')(x)
-x = MaxPooling2D((2, 2), strides=(2, 2), name='block4_pool')(x)
-
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv1')(x)
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv2')(x)
-x = Conv2D(512, (3, 3), activation='relu', padding='same', name='block5_conv3')(x)
-x = MaxPooling2D((2, 2), strides=(2, 2), name='block5_pool')(x)
-
-# Fully connected layers
-x = Flatten(name='flatten')(x)
-x = Dense(4096, activation='relu', name='fc1')(x)
-x = Dense(4096, activation='relu', name='fc2')(x)
-
-# Output layers
-bbox_output = Dense(4, name='bbox_output')(x) # output bounding box coordinates
-class_output = Dense(num_classes, activation='softmax', name='class_output')(x) # output class label
 
 # Define the model with input and output layers
-model = Model(inputs=inputs, outputs=(bbox_output, class_output))
+model = Model(inputs=inputs, outputs=(class_output, bbox_output))
 
 losses = {
-	'bbox_output': 'mean_squared_error',
-    'class_output': 'categorical_crossentropy'
+    'class_output': 'categorical_crossentropy',
+	'bbox_output': 'mean_squared_error'
 }
 
 metrics={
-    'bbox_output': 'accuracy',
-    'class_output': 'accuracy'
+    'class_output': 'accuracy',
+    'bbox_output': 'accuracy'
 }
 
 trainTargets = {
-	"class_output": trainLabels_cls,
+	"class_output": trainLabels,
 	"bbox_output": trainbboxes
 }
 validTargets = {
-	"class_output": validLabels_cls,
+	"class_output": validLabels,
 	"bbox_output": validbboxes
 }
 testTargets = {
-	"class_output": testLabels_cls,
+	"class_output": testLabels,
 	"bbox_output": testbboxes
 }
 
-# Compile the model with custom loss and Adam optimizer
-# model.compile(loss=customLoss, optimizer='adam', metrics=['accuracy'])
+
+# Compile the model with categorical_crossentropy, mean_squared_error and Adam optimizer
 model.compile(loss=losses, optimizer='adam', metrics=metrics)
 
 
-# Train the model on the training data
-early_stop = EarlyStopping(monitor='val_bbox_output_accuracy', patience=5, verbose=1, mode='max', restore_best_weights=True)
+# Train the model on the training data and validation on validation data
 checkpoint = ModelCheckpoint('best_model.h5', monitor='val_bbox_output_accuracy', save_best_only=True, mode='max', verbose=1)
-model.fit(trainImg, trainTargets, epochs=3, validation_data=(validImg, validTargets), callbacks=[early_stop, checkpoint])
+model.fit(trainImg, trainTargets, epochs=150, batch_size=50, validation_data=(validImg, validTargets), callbacks=[checkpoint])
 
 # Evaluate the model on the test set
 test_loss, test_bbox_loss, test_class_loss, test_bbox_acc, test_class_acc = model.evaluate(testImg, testTargets, verbose=0)
@@ -187,49 +167,33 @@ print('Test set bounding box accuracy: ', test_bbox_acc)
 print('Test set class accuracy: ', test_class_acc)
 
 
-# # Load the new data
-# newImg, newLabels, newBboxes, newImgPath = readData('dataset2/new/')
+# Load the new data
+newImg, newLabels, newBboxes = readData(NEWPATH, labelMap)
 
-# # Predict bounding boxes on the new data
-# preds = model.predict(newImg)
+# Predict bounding boxes on the new data
+pred_labels, pred_bboxes = model.predict(newImg)
 
-# label_map = {0: 'trafficLight-Red', 1: 'trafficLight', 2: 'car', 3: 'truck', 4: 'trafficLight-Green'}
-# y, x = scale(newImgPath)
-# size = 224
-# y_as = y/size
-# x_as = x/size
+# np.set_printoptions(threshold=sys.maxsize)
+# print(pred_labels)
 
-# print('size: ', y,' ',x)
-# print('scale: ', y_as,' ',x_as)
-
-# # Create empty arrays for the labels and boundingbox data
-# pred_labels = np.zeros((len(newImg), 5))
-# pred_bboxes = np.zeros((len(newImg), 4))
-# lbl = np.zeros((len(newImg)))
+orig_size = (1920, 1200)
+res_size = 224
+bboxes = [unnormalize_bbox(bbox, orig_size, res_size) for bbox in pred_bboxes]
+img_size = (224, 224)
+bboxScaled = [scaleBbox(bbox, orig_size, img_size) for bbox in bboxes]
 
 
-# # plot the images with labels and bounding box
-# for i in range(len(newImg)):
-#     fig, ax = plt.subplots()
-#     img = newImg[i]
-#     pred_labels[i,:] = preds[i,:5]
-#     pred_bboxes[i,:] = preds[i,5:]
-#     lbl[i] = np.argmax(pred_bboxes[i,:], axis=-1)
-#     # Plot the image
-#     ax.imshow(img)
-#     ax.axis('off')
-#     # Get the label name from the label map
-#     label_name = label_map[lbl[i]] 
-#     # Plot the label name
-#     ax.text(0, 0, label_name, fontsize=10, color='red')
-#     # Get the bounding box coordinates and convert to pixel values
-#     print('  Class', label_name, ':', pred_bboxes[i][0], pred_bboxes[i][1], pred_bboxes[i][2], pred_bboxes[i][3])
-#     xmin = int(pred_bboxes[i][0] * x_as)
-#     ymin = int(pred_bboxes[i][1] * y_as)
-#     xmax = int(pred_bboxes[i][2] * x_as)
-#     ymax = int(pred_bboxes[i][3] * y_as)
-#     print('  Class', label_name, ':', xmin, ymin, xmax, ymax)
-#     # Plot the bounding box
-#     rect = patches.Rectangle((xmin, ymin), xmax-xmin, ymax-ymin, fill=False, edgecolor='r')
-#     ax.add_patch(rect)
-#     plt.show()
+labelMap = {v: k for k, v in labelMap.items()}
+# plot the images with labels and bounding box
+for i in range(len(newImg)):
+    fig, ax = plt.subplots()
+    img = newImg[i]
+    lbl = np.argmax(pred_labels[i], axis=-1)
+    ax.imshow(img)
+    ax.axis('off')
+    label_name = labelMap[lbl] 
+    xmin, ymin, xmax, ymax = bboxScaled[i]
+    ax.text(xmin, ymin, label_name, fontsize=10, color='red')
+    rect = patches.Rectangle((xmin, ymin), xmax-xmin, ymax-ymin, fill=False, edgecolor='r')
+    ax.add_patch(rect)
+    plt.show()
